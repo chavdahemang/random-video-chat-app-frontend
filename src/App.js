@@ -5,7 +5,7 @@ import "./App.css"
 const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
 
 function App() {
-  console.log("backend url",SOCKET_SERVER_URL)
+  console.log("backend urls",SOCKET_SERVER_URL)
   const [socket, setSocket] = useState(null);
   const [myStream, setMyStream] = useState(null);
   const [partnerId, setPartnerId] = useState(null);
