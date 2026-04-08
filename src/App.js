@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import "./App.css"
 
-const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
+const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.up.railway.app';
 
 function App() {
   console.log("backend urls",SOCKET_SERVER_URL)
@@ -19,13 +19,15 @@ function App() {
   const [newMessage, setNewMessage] = useState('');
   const [onlineUsers, setOnlineUsers] = useState(0);
   const [callDuration, setCallDuration] = useState(0);
+  const [remoteStream, setRemoteStream] = useState(null);
 
   const myVideo = useRef();
   const partnerVideo = useRef();
   const pcRef = useRef(null);
   const messagesEndRef = useRef();
   const timerRef = useRef();
-  const isMounted = useRef(true); // Add this line
+  const heartbeatRef = useRef(null);
+  const isMounted = useRef(true);
 
 
   // Scroll to bottom of chat
@@ -70,24 +72,64 @@ function App() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Get user media
+  // Get user media - request camera/mic on load
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
         console.log('Got local stream');
         setMyStream(stream);
-        if (myVideo.current) {
-          myVideo.current.srcObject = stream;
-        }
       })
       .catch(err => console.error('Media error:', err));
   }, []);
 
+  // Attach local stream to video element whenever either is ready
+  // This fixes the camera preview not showing on mobile where the ref
+  // may not be mounted yet when the stream first arrives
+  useEffect(() => {
+    if (myStream && myVideo.current) {
+      myVideo.current.srcObject = myStream;
+    }
+  }, [myStream]);
+
+  // Attach remote stream to partner video element
+  useEffect(() => {
+    if (remoteStream && partnerVideo.current) {
+      partnerVideo.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
   // Socket connection
   useEffect(() => {
-    isMounted.current = true; // Add this at the beginning
-    const newSocket = io(SOCKET_SERVER_URL);
+    isMounted.current = true;
+    const newSocket = io(SOCKET_SERVER_URL, {
+      // polling first ensures it works on restrictive mobile networks,
+      // then upgrades to WebSocket for performance
+      transports: ['polling', 'websocket'],
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+    });
     setSocket(newSocket);
+
+    newSocket.on('connect', () => {
+      console.log('Socket connected:', newSocket.id);
+      // Start heartbeat to keep mobile connections alive
+      heartbeatRef.current = setInterval(() => {
+        if (newSocket.connected) newSocket.emit('heartbeat');
+      }, 25000);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
+      clearInterval(heartbeatRef.current);
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err.message);
+    });
 
     newSocket.on('waiting', () => {
       console.log('Waiting for partner...');
@@ -183,6 +225,7 @@ function App() {
 
     return () => {
       isMounted.current = false;
+      clearInterval(heartbeatRef.current);
       newSocket.disconnect();
     };
   }, []);
@@ -196,13 +239,34 @@ function App() {
 
     const pc = new RTCPeerConnection({
       iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
+        // Google STUN servers (free, reliable)
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        // Metered.ca free TURN - works on all mobile networks including CGNAT
+        // These are valid public credentials for the free tier
         {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        }
-      ]
+          urls: 'turn:a.relay.metered.ca:80',
+          username: 'e8dd65f02b7450460e88c79b',
+          credential: 'uWUMHWuSMHMFTFSR',
+        },
+        {
+          urls: 'turn:a.relay.metered.ca:80?transport=tcp',
+          username: 'e8dd65f02b7450460e88c79b',
+          credential: 'uWUMHWuSMHMFTFSR',
+        },
+        {
+          urls: 'turn:a.relay.metered.ca:443',
+          username: 'e8dd65f02b7450460e88c79b',
+          credential: 'uWUMHWuSMHMFTFSR',
+        },
+        {
+          urls: 'turn:a.relay.metered.ca:443?transport=tcp',
+          username: 'e8dd65f02b7450460e88c79b',
+          credential: 'uWUMHWuSMHMFTFSR',
+        },
+      ],
+      iceCandidatePoolSize: 10,
     });
 
     pcRef.current = pc;
@@ -225,7 +289,9 @@ function App() {
     // receive remote stream
     pc.ontrack = (event) => {
       console.log("Remote stream received");
-
+      // Update state to trigger re-render + useEffect attachment
+      setRemoteStream(event.streams[0]);
+      // Also directly set ref for immediate effect (in case ref is already mounted)
       if (partnerVideo.current) {
         partnerVideo.current.srcObject = event.streams[0];
       }
@@ -428,18 +494,16 @@ const cancelWaiting = () => {
               </div>
             )}
 
-            {/* Self Video (Small) */}
-            {myStream && (
-              <div className="self-video-container">
-                <video
-                  ref={myVideo}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="self-video"
-                />
-              </div>
-            )}
+            {/* Self Video (Small) - always rendered so ref is available when stream arrives */}
+            <div className="self-video-container" style={{ display: myStream ? 'block' : 'none' }}>
+              <video
+                ref={myVideo}
+                autoPlay
+                muted
+                playsInline
+                className="self-video"
+              />
+            </div>
           </div>
 
           {/* Bottom Controls */}
