@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import "./App.css"
 
-const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.up.railway.app';
+const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
 
 function App() {
   console.log("backend urls",SOCKET_SERVER_URL)
@@ -74,12 +74,28 @@ function App() {
 
   // Get user media - request camera/mic on load
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    const constraints = {
+      audio: true,
+      video: {
+        // prefer front camera on mobile, any camera on desktop
+        facingMode: 'user',
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    };
+    navigator.mediaDevices.getUserMedia(constraints)
       .then(stream => {
         console.log('Got local stream');
         setMyStream(stream);
       })
-      .catch(err => console.error('Media error:', err));
+      .catch(err => {
+        console.error('Media error:', err);
+        // On mobile the first attempt may fail if facing mode is unsupported;
+        // fall back to any available camera
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+          .then(stream => setMyStream(stream))
+          .catch(err2 => console.error('Media fallback error:', err2));
+      });
   }, []);
 
   // Attach local stream to video element whenever either is ready
@@ -88,6 +104,8 @@ function App() {
   useEffect(() => {
     if (myStream && myVideo.current) {
       myVideo.current.srcObject = myStream;
+      // iOS Safari requires explicit play() call even with autoPlay attribute
+      myVideo.current.play().catch(() => {});
     }
   }, [myStream]);
 
@@ -95,6 +113,8 @@ function App() {
   useEffect(() => {
     if (remoteStream && partnerVideo.current) {
       partnerVideo.current.srcObject = remoteStream;
+      // iOS Safari requires explicit play() after setting srcObject
+      partnerVideo.current.play().catch(() => {});
     }
   }, [remoteStream]);
 
@@ -102,12 +122,13 @@ function App() {
   useEffect(() => {
     isMounted.current = true;
     const newSocket = io(SOCKET_SERVER_URL, {
-      // polling first ensures it works on restrictive mobile networks,
-      // then upgrades to WebSocket for performance
+      // Start with polling (works on all networks incl. mobile carrier NAT)
+      // then upgrade to WebSocket for better performance
       transports: ['polling', 'websocket'],
-      withCredentials: true,
+      // NOTE: withCredentials removed — it forces backend to echo exact origin
+      // instead of wildcard CORS (*), which breaks on mobile browsers
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: 15,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
@@ -288,12 +309,15 @@ function App() {
 
     // receive remote stream
     pc.ontrack = (event) => {
-      console.log("Remote stream received");
+      console.log("Remote stream received", event.streams);
+      if (!event.streams || !event.streams[0]) return;
       // Update state to trigger re-render + useEffect attachment
       setRemoteStream(event.streams[0]);
       // Also directly set ref for immediate effect (in case ref is already mounted)
       if (partnerVideo.current) {
         partnerVideo.current.srcObject = event.streams[0];
+        // iOS Safari requires explicit play() after setting srcObject
+        partnerVideo.current.play().catch(() => {});
       }
     };
 
