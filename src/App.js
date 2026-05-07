@@ -259,6 +259,8 @@ function App() {
     console.log("Creating RTCPeerConnection");
 
     const pc = new RTCPeerConnection({
+       iceTransportPolicy: "all",
+        // iceTransportPolicy: "relay",
       iceServers: [
         // Google STUN servers (free, reliable)
         { urls: 'stun:stun.l.google.com:19302' },
@@ -286,6 +288,21 @@ function App() {
           username: 'e8dd65f02b7450460e88c79b',
           credential: 'uWUMHWuSMHMFTFSR',
         },
+         {
+      urls: [
+        "stun:stun.l.google.com:19302",
+        "stun:global.stun.twilio.com:3478"
+      ]
+    },
+
+    {
+      urls: [
+        "turn:YOUR_DOMAIN:3478?transport=udp",
+        "turn:YOUR_DOMAIN:3478?transport=tcp"
+      ],
+      username: "test",
+      credential: "test123"
+    }
       ],
       iceCandidatePoolSize: 10,
     });
