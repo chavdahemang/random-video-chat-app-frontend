@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import "./App.css"
 
-const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.up.railway.app';
+const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
 
 function App() {
   console.log("backend urls",SOCKET_SERVER_URL)
@@ -28,6 +28,9 @@ function App() {
   const timerRef = useRef();
   const heartbeatRef = useRef(null);
   const isMounted = useRef(true);
+  // Buffer for ICE candidates / signals that arrive before RTCPeerConnection is ready
+  const pendingSignalsRef = useRef([]);
+  const socketRef = useRef(null);
 
 
   // Scroll to bottom of chat
@@ -121,50 +124,51 @@ function App() {
   // Socket connection
   useEffect(() => {
     isMounted.current = true;
+
     const newSocket = io(SOCKET_SERVER_URL, {
-      // Start with polling (works on all networks incl. mobile carrier NAT)
-      // then upgrade to WebSocket for better performance
+      // polling first → always works even on mobile carrier NAT / strict firewalls
+      // Socket.IO auto-upgrades to WebSocket once polling succeeds
       transports: ['polling', 'websocket'],
-      // NOTE: withCredentials removed — it forces backend to echo exact origin
-      // instead of wildcard CORS (*), which breaks on mobile browsers
       reconnection: true,
-      reconnectionAttempts: 15,
+      reconnectionAttempts: 20,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
     });
+
+    socketRef.current = newSocket;
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
-      console.log('Socket connected:', newSocket.id);
-      // Start heartbeat to keep mobile connections alive
+      console.log('[Socket] Connected:', newSocket.id);
       heartbeatRef.current = setInterval(() => {
         if (newSocket.connected) newSocket.emit('heartbeat');
       }, 25000);
     });
 
     newSocket.on('disconnect', (reason) => {
-      console.log('Socket disconnected:', reason);
+      console.log('[Socket] Disconnected:', reason);
       clearInterval(heartbeatRef.current);
     });
 
     newSocket.on('connect_error', (err) => {
-      console.error('Socket connection error:', err.message);
+      console.error('[Socket] Connection error:', err.message);
     });
 
     newSocket.on('waiting', () => {
-      console.log('Waiting for partner...');
+      console.log('[Socket] Waiting for partner...');
       setIsWaiting(true);
       setIsConnected(false);
     });
 
     newSocket.on('paired', ({ partnerId, initiator }) => {
-      console.log('Paired with:', partnerId, 'Initiator:', initiator);
+      console.log('[Socket] Paired with:', partnerId, '| Initiator:', initiator);
+      // Clear any buffered signals from previous session
+      pendingSignalsRef.current = [];
       setPartnerId(partnerId);
       setIsInitiator(initiator);
       setIsWaiting(false);
       setIsConnected(true);
-      // Add system message
       setMessages(prev => [...prev, {
         type: 'system',
         text: 'Connected with a new partner!',
@@ -172,55 +176,22 @@ function App() {
       }]);
     });
 
+    // CRITICAL FIX: signals (especially offers) often arrive BEFORE the
+    // RTCPeerConnection is created because React state updates are async.
+    // We buffer them here and drain the queue once the PC is ready.
     newSocket.on('signal', async ({ from, signal }) => {
-
       const pc = pcRef.current;
-      if (!pc) return;
 
-      try {
-
-        if (signal.type === "offer") {
-
-          await pc.setRemoteDescription(
-            new RTCSessionDescription(signal.sdp)
-          );
-
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
-          newSocket.emit("signal", {
-            to: from,
-            signal: {
-              type: "answer",
-              sdp: answer
-            }
-          });
-
-        }
-
-        else if (signal.type === "answer") {
-
-          await pc.setRemoteDescription(
-            new RTCSessionDescription(signal.sdp)
-          );
-
-        }
-
-        else if (signal.type === "candidate") {
-
-          await pc.addIceCandidate(
-            new RTCIceCandidate(signal.candidate)
-          );
-
-        }
-
-      } catch (err) {
-        console.log("Signal error:", err);
+      if (!pc) {
+        // PC not ready yet — buffer the signal
+        console.log('[Signal] PC not ready, buffering signal type:', signal.type);
+        pendingSignalsRef.current.push({ from, signal });
+        return;
       }
 
+      await handleSignal(pc, newSocket, from, signal);
     });
 
-    // Add chat message listener
     newSocket.on('chat-message', ({ from, message }) => {
       setMessages(prev => [...prev, {
         type: 'received',
@@ -230,11 +201,12 @@ function App() {
       }]);
     });
 
-    newSocket.on("online-users", (count) => {
+    newSocket.on('online-users', (count) => {
       setOnlineUsers(count);
     });
 
     newSocket.on('partner-left', () => {
+      console.log('[Socket] Partner left');
       setMessages(prev => [...prev, {
         type: 'system',
         text: 'Partner disconnected',
@@ -249,143 +221,163 @@ function App() {
       clearInterval(heartbeatRef.current);
       newSocket.disconnect();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Create peer connection
+  // Helper: process a single signal on a given RTCPeerConnection
+  async function handleSignal(pc, sock, from, signal) {
+    try {
+      if (signal.type === 'offer') {
+        console.log('[WebRTC] Received offer, creating answer');
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sock.emit('signal', { to: from, signal: { type: 'answer', sdp: answer } });
+
+      } else if (signal.type === 'answer') {
+        console.log('[WebRTC] Received answer');
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+
+      } else if (signal.type === 'candidate') {
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } else {
+          // Remote description not set yet — buffer the candidate too
+          pendingSignalsRef.current.push({ from, signal });
+        }
+      }
+    } catch (err) {
+      console.error('[WebRTC] Signal error:', signal.type, err.message);
+    }
+  }
+
+  // Create peer connection whenever we get paired
   useEffect(() => {
+    if (!isConnected || !myStream || !partnerId || !socket) return;
 
-    if (!isConnected || !myStream || !partnerId || !socket || pcRef.current) return;
+    // CRITICAL FIX: always close/null the old PC before creating a new one.
+    // Without this, the guard below would block new sessions after skip/reconnect.
+    if (pcRef.current) {
+      console.log('[WebRTC] Closing stale RTCPeerConnection before creating new one');
+      pcRef.current.close();
+      pcRef.current = null;
+    }
 
-    console.log("Creating RTCPeerConnection");
+    console.log('[WebRTC] Creating RTCPeerConnection');
 
     const pc = new RTCPeerConnection({
-      iceTransportPolicy: "all",
+      iceTransportPolicy: 'all',
+      iceCandidatePoolSize: 10,
       iceServers: [
-        // Google STUN servers — helps when peers are on the same or simple NAT network
+        // Google public STUN
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Open Relay Project — free public TURN servers, no signup needed
-        // Works on mobile data, CGNAT, and strict firewall networks
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:80?transport=tcp',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        // Cloudflare STUN (very fast, globally distributed)
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        // Open Relay TURN — required for mobile carrier NAT (CGNAT)
+        // These free credentials are published by the Open Relay Project
+        { urls: 'turn:openrelay.metered.ca:80',       username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443',      username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
       ],
-      iceCandidatePoolSize: 10,
     });
 
     pcRef.current = pc;
 
-    // send ICE candidates
+    // Drain any buffered signals that arrived before the PC was ready
+    const drainPending = async () => {
+      const buffered = pendingSignalsRef.current.splice(0);
+      console.log('[WebRTC] Draining', buffered.length, 'buffered signals');
+      for (const { from, signal } of buffered) {
+        await handleSignal(pc, socket, from, signal);
+      }
+    };
+    drainPending();
+
+    // ICE candidate → send to partner via socket
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-
-        socket.emit("signal", {
-          to: partnerId,
-          signal: {
-            type: "candidate",
-            candidate: event.candidate
-          }
-        });
-
+        socket.emit('signal', { to: partnerId, signal: { type: 'candidate', candidate: event.candidate } });
       }
     };
 
-    // receive remote stream
-    pc.ontrack = (event) => {
-      console.log("Remote stream received", event.streams);
-      if (!event.streams || !event.streams[0]) return;
-      // Update state to trigger re-render + useEffect attachment
-      setRemoteStream(event.streams[0]);
-      // Also directly set ref for immediate effect (in case ref is already mounted)
-      if (partnerVideo.current) {
-        partnerVideo.current.srcObject = event.streams[0];
-        // iOS Safari requires explicit play() after setting srcObject
-        partnerVideo.current.play().catch(() => {});
+    pc.onicegatheringstatechange = () => {
+      console.log('[ICE] Gathering state:', pc.iceGatheringState);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log('[ICE] Connection state:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') {
+        console.warn('[ICE] Failed — attempting ICE restart');
+        pc.restartIce();
       }
     };
 
     pc.onconnectionstatechange = () => {
-  if (pc.connectionState === "failed") {
-    skipPartner();
-  }
-};
+      console.log('[WebRTC] Connection state:', pc.connectionState);
+      if (pc.connectionState === 'failed') {
+        skipPartner();
+      }
+    };
 
-    // add local tracks
-    myStream.getTracks().forEach(track => {
-      pc.addTrack(track, myStream);
-    });
+    // Remote stream received → display partner video
+    pc.ontrack = (event) => {
+      console.log('[WebRTC] Remote track received', event.streams);
+      if (!event.streams || !event.streams[0]) return;
+      setRemoteStream(event.streams[0]);
+      if (partnerVideo.current) {
+        partnerVideo.current.srcObject = event.streams[0];
+        partnerVideo.current.play().catch(() => {});
+      }
+    };
 
-    // if initiator → create offer
+    // Add our local tracks to the connection
+    myStream.getTracks().forEach(track => pc.addTrack(track, myStream));
+
+    // Initiator creates and sends the offer
     if (isInitiator) {
-
       (async () => {
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        socket.emit("signal", {
-          to: partnerId,
-          signal: {
-            type: "offer",
-            sdp: offer
-          }
-        });
-
+        try {
+          console.log('[WebRTC] Creating offer as initiator');
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('signal', { to: partnerId, signal: { type: 'offer', sdp: offer } });
+        } catch (err) {
+          console.error('[WebRTC] Offer creation failed:', err.message);
+        }
       })();
-
     }
 
     return () => {
-
       if (pcRef.current) {
         pcRef.current.close();
         pcRef.current = null;
       }
-
     };
-
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, myStream, partnerId, socket, isInitiator]);
 
   const findPartner = () => {
     if (socket) {
-      // Clean up existing connection
-      // if (peerRef.current) {
-      //   try {
-      //     peerRef.current.removeAllListeners?.();
-      //     peerRef.current.destroy();
-      //   } catch (err) {
-      //     console.error('Error destroying peer:', err);
-      //   }
-      //   peerRef.current = null;
-      // }
-
+      // CRITICAL FIX: explicitly close and clear the old peer connection here.
+      // The useEffect guard `if (pcRef.current) return` would otherwise block
+      // a new connection from being created on the next pair.
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
       if (partnerVideo.current) {
         partnerVideo.current.srcObject = null;
       }
-
+      pendingSignalsRef.current = [];
+      setRemoteStream(null);
       setPartnerId(null);
       setIsConnected(false);
       setIsWaiting(true);
       setMessages([]);
-
       socket.emit('find-partner');
     }
   };
