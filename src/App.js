@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import "./App.css"
 
-const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
+const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.up.railway.app';
 
 function App() {
   console.log("backend urls",SOCKET_SERVER_URL)
@@ -259,50 +259,34 @@ function App() {
     console.log("Creating RTCPeerConnection");
 
     const pc = new RTCPeerConnection({
-       iceTransportPolicy: "all",
-        // iceTransportPolicy: "relay",
+      iceTransportPolicy: "all",
       iceServers: [
-        // Google STUN servers (free, reliable)
+        // Google STUN servers — helps when peers are on the same or simple NAT network
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Metered.ca free TURN - works on all mobile networks including CGNAT
-        // These are valid public credentials for the free tier
+        // Open Relay Project — free public TURN servers, no signup needed
+        // Works on mobile data, CGNAT, and strict firewall networks
         {
-          urls: 'turn:a.relay.metered.ca:80',
-          username: 'e8dd65f02b7450460e88c79b',
-          credential: 'uWUMHWuSMHMFTFSR',
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
         },
         {
-          urls: 'turn:a.relay.metered.ca:80?transport=tcp',
-          username: 'e8dd65f02b7450460e88c79b',
-          credential: 'uWUMHWuSMHMFTFSR',
+          urls: 'turn:openrelay.metered.ca:80?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
         },
         {
-          urls: 'turn:a.relay.metered.ca:443',
-          username: 'e8dd65f02b7450460e88c79b',
-          credential: 'uWUMHWuSMHMFTFSR',
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
         },
         {
-          urls: 'turn:a.relay.metered.ca:443?transport=tcp',
-          username: 'e8dd65f02b7450460e88c79b',
-          credential: 'uWUMHWuSMHMFTFSR',
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
         },
-         {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:global.stun.twilio.com:3478"
-      ]
-    },
-
-    {
-      urls: [
-        "turn:YOUR_DOMAIN:3478?transport=udp",
-        "turn:YOUR_DOMAIN:3478?transport=tcp"
-      ],
-      username: "test",
-      credential: "test123"
-    }
       ],
       iceCandidatePoolSize: 10,
     });
