@@ -5,7 +5,7 @@ import "./App.css"
 const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
 
 function App() {
-  console.log("backend urls",SOCKET_SERVER_URL)
+  console.log("backend urls", SOCKET_SERVER_URL)
   const [socket, setSocket] = useState(null);
   const [myStream, setMyStream] = useState(null);
   const [partnerId, setPartnerId] = useState(null);
@@ -108,7 +108,7 @@ function App() {
     if (myStream && myVideo.current) {
       myVideo.current.srcObject = myStream;
       // iOS Safari requires explicit play() call even with autoPlay attribute
-      myVideo.current.play().catch(() => {});
+      myVideo.current.play().catch(() => { });
     }
   }, [myStream]);
 
@@ -117,7 +117,7 @@ function App() {
     if (remoteStream && partnerVideo.current) {
       partnerVideo.current.srcObject = remoteStream;
       // iOS Safari requires explicit play() after setting srcObject
-      partnerVideo.current.play().catch(() => {});
+      partnerVideo.current.play().catch(() => { });
     }
   }, [remoteStream]);
 
@@ -128,11 +128,11 @@ function App() {
     const newSocket = io(SOCKET_SERVER_URL, {
       // polling first → always works even on mobile carrier NAT / strict firewalls
       // Socket.IO auto-upgrades to WebSocket once polling succeeds
-      transports: ['polling', 'websocket'],
+      transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 20,
+      secure: true,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
       timeout: 20000,
     });
 
@@ -221,7 +221,7 @@ function App() {
       clearInterval(heartbeatRef.current);
       newSocket.disconnect();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Helper: process a single signal on a given RTCPeerConnection
@@ -278,14 +278,44 @@ function App() {
         { urls: 'stun:stun.cloudflare.com:3478' },
         // Open Relay TURN — required for mobile carrier NAT (CGNAT)
         // These free credentials are published by the Open Relay Project
-        { urls: 'turn:openrelay.metered.ca:80',       username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443',      username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        /////////////////
+        // Google STUN
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+
+        // Cloudflare STUN
+        { urls: 'stun:stun.cloudflare.com:3478' },
+
+        // TURN UDP
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+
+        // TURN TCP
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+
       ],
     });
 
     pcRef.current = pc;
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("ICE:", pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("CONNECTION:", pc.connectionState);
+    };
 
     // Drain any buffered signals that arrived before the PC was ready
     const drainPending = async () => {
@@ -330,7 +360,7 @@ function App() {
       setRemoteStream(event.streams[0]);
       if (partnerVideo.current) {
         partnerVideo.current.srcObject = event.streams[0];
-        partnerVideo.current.play().catch(() => {});
+        partnerVideo.current.play().catch(() => { });
       }
     };
 
@@ -357,7 +387,7 @@ function App() {
         pcRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, myStream, partnerId, socket, isInitiator]);
 
   const findPartner = () => {
@@ -448,14 +478,14 @@ function App() {
       setNewMessage('');
     }
   };
-const cancelWaiting = () => {
+  const cancelWaiting = () => {
 
-  if (socket) {
-    socket.emit("skip"); // server will detect waiting state
-    setIsWaiting(false);
-  }
+    if (socket) {
+      socket.emit("skip"); // server will detect waiting state
+      setIsWaiting(false);
+    }
 
-};
+  };
   return (
     <div className="app-container">
       <div className="background"></div>
