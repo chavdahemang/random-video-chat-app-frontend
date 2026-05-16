@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import io from 'socket.io-client';
 import "./App.css"
 
-const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://video-chat-backend.onrender.com';
+const SOCKET_SERVER_URL = process.env.REACT_APP_SOCKET_URL || 'https://random-video-chat-app-ubkm.onrender.com';
 
 function App() {
   console.log("backend urls", SOCKET_SERVER_URL)
