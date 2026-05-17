@@ -1,7 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './index.css';
 import App from './App';
+import AzarPage from './AzarPage';
 import reportWebVitals from './reportWebVitals';
 
 if (typeof window !== 'undefined') {
@@ -12,11 +14,15 @@ if (typeof window !== 'undefined') {
   };
 }
 
-
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
-    <App />
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<App />} />
+        <Route path="/azar" element={<AzarPage />} />
+      </Routes>
+    </BrowserRouter>
   </React.StrictMode>
 );
 
